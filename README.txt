@@ -1,17 +1,9 @@
-pencilc
-=======
-
-Compiler prototype for the PENCIL project.
-
-How to build
-------------
-
-Unfortunately, clang's plugin documentation seems to be premature and I
-couldn't find accessible instructions on how to compile a plugin.  The only way
-I know is to stick this into clang's tools/ directory and build it with all the
-rest of the clang source tree.  I don't know much about cmake, much less how
-clang uses it, so any suggestions on how to minimize intrusiveness would be
-welcome.
+This is a prototype compiler for PENCIL.  Unfortunately, clang's plugin
+documentation seems to be premature and I couldn't find accessible instructions
+on how to compile a plugin.  The only way I know is to stick this into clang's
+tools/ directory and build it with all the rest of the clang source tree.  I
+don't know much about cmake, much less how clang uses it, so any suggestions on
+how to minimize intrusiveness would be welcome.
 
 Let the root of clang's source tree be $clang.  Then:
 
@@ -34,19 +26,15 @@ Mac:
 $ clang -cc1 -load <install-dir>/lib/PrintFunctionNames.dylib -plugin pencilc some-input-file.c
 --
 
-
-Testing
--------
-
 Tests can be invoked by going to your build directory's tools/pencilc/test and
 typing
 
   ctest
 
 if you're using a make-based build.  If you're using something else, I have no
-idea.  The development is partly test-driven, so don't be surprised to
-occasionally see a small number of tests to fail.  If *most* of them fail, then
-there's something wrong.
+idea.  The development is partly test-driven, so don't be surprised to see a
+small number of tests to fail.  If *most* of them fail, then there's something
+wrong.
 
 Test cases are collected into tools/pencilc/test/ill-formed and
 tools/pencilc/test/well-formed; the former should contain programs that should
@@ -58,8 +46,6 @@ madness?
 
 
 
-Known Issues
-------------
 
 There are some known issues which will eventually be fixed but not any time
 soon:
