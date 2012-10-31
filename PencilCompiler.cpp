@@ -31,8 +31,7 @@ public:
 
   DiagnosticBuilder operator () (DiagnosticsEngine::Level level,
                                  const SourceLocation &loc,
-                                 const char *message)
-  {
+                                 const char *message) {
     DiagnosticsEngine &Diagnostics = CI.getDiagnostics ();
 
     return Diagnostics.Report (loc,
@@ -41,8 +40,7 @@ public:
 
   DiagnosticBuilder operator () (DiagnosticsEngine::Level level,
                                  const SourceLocation &pos,
-                                 const std::string &message)
-  {
+                                 const std::string &message) {
     return (*this) (level, pos, message.c_str ());
   }
 };
@@ -70,15 +68,13 @@ protected:
   virtual Result forVariableArray (QualType, const VariableArrayType &) = 0;
 
 public:
-  Result operator () (const QualType &type)
-  {
+  Result operator () (const QualType &type) {
     ASTContext &ctx = TypeVisitor<Result>::ctx;
-    if (const PointerType *t = type->getAs<PointerType> ())
-      {
-        if (t->isFunctionPointerType ())
-          return forFunctionPointer (type, *t);
-        else return forPointer (type, *t);
-      }
+    if (const PointerType *t = type->getAs<PointerType> ()) {
+      if (t->isFunctionPointerType ())
+        return forFunctionPointer (type, *t);
+      return forPointer (type, *t);
+    }
     else if (const VariableArrayType *a = ctx.getAsVariableArrayType (type))
       return forVariableArray (type, *a);
     else if (const IncompleteArrayType *a = ctx.getAsIncompleteArrayType (type))
@@ -109,49 +105,38 @@ public:
 // TypeVisitor<>, but it can be error-prone (missing cases are silently
 // defaulted) so I'm not sure if I should.
 template <typename Result>
-class TypeVisitorWithDefault : public TypeVisitor<Result>
-{
+class TypeVisitorWithDefault : public TypeVisitor<Result> {
 protected:
   virtual Result forDefault (QualType) = 0;
 
-  virtual Result forFunctionPointer (QualType t, const PointerType &)
-  {
+  virtual Result forFunctionPointer (QualType t, const PointerType &) {
     return forDefault (t);
   }
-  virtual Result forPointer (QualType t, const PointerType &)
-  {
+  virtual Result forPointer (QualType t, const PointerType &) {
     return forDefault (t);
   }
-  virtual Result forScalar (QualType t, const BuiltinType &)
-  {
+  virtual Result forScalar (QualType t, const BuiltinType &) {
     return forDefault (t);
   }
-  virtual Result forStruct (QualType t, const RecordType &)
-  {
+  virtual Result forStruct (QualType t, const RecordType &) {
     return forDefault (t);
   }
-  virtual Result forUnion (QualType t, const RecordType &)
-  {
+  virtual Result forUnion (QualType t, const RecordType &) {
     return forDefault (t);
   }
-  virtual Result forEnum (QualType t, const EnumType &)
-  {
+  virtual Result forEnum (QualType t, const EnumType &) {
     return forDefault (t);
   }
-  virtual Result forArray (QualType t, const ArrayType &)
-  {
+  virtual Result forArray (QualType t, const ArrayType &) {
     return forDefault (t);
   }
-  virtual Result forIncompleteArray (QualType t, const IncompleteArrayType &a)
-  {
+  virtual Result forIncompleteArray (QualType t, const IncompleteArrayType &a) {
     return forArray (t, a);
   }
-  virtual Result forConstantArray (QualType t, const ConstantArrayType &a)
-  {
+  virtual Result forConstantArray (QualType t, const ConstantArrayType &a) {
     return forArray (t, a);
   }
-  virtual Result forVariableArray (QualType t, const VariableArrayType &a)
-  {
+  virtual Result forVariableArray (QualType t, const VariableArrayType &a) {
     return forArray (t, a);
   }
 
@@ -182,67 +167,56 @@ struct TypeWFChecker : public TypeVisitor<void> {
   std::string (*formatErrorMessage) (const std::string &);
 
   // Skip formatting by formatErrorMessage ().
-  void addFormattedViolation (ViolationPriority p, const std::string &msg)
-  {
+  void addFormattedViolation (ViolationPriority p, const std::string &msg) {
     violations[p].push_back (msg);
   }
 
-  void addViolation (ViolationPriority p, const std::string &msg)
-  {
+  void addViolation (ViolationPriority p, const std::string &msg) {
     addFormattedViolation (p, formatErrorMessage (msg));
   }
 
-  virtual void forFunctionPointer (QualType t, const PointerType &pt)
-  {
+  virtual void forFunctionPointer (QualType t, const PointerType &pt) {
     addViolation (NonPencilType,
                   "function pointer type '" + t.getAsString () + "'");
   }
 
-  virtual void forPointer (QualType t, const PointerType &pt)
-  {
+  virtual void forPointer (QualType t, const PointerType &pt) {
     addViolation(NonPencilType, "pointer type '" + t.getAsString () + "'");
   }
 
-  virtual void forScalar (QualType t, const BuiltinType &)
-  {
+  virtual void forScalar (QualType t, const BuiltinType &) {
     // Scalars are always OK.
   }
 
-  virtual void forIncompleteArray (QualType t, const IncompleteArrayType &a)
-  {
+  virtual void forIncompleteArray (QualType t, const IncompleteArrayType &a) {
     addViolation (IncompleteType,
                   "unsized array type '" + t.getAsString ()
                   + "' - write 'T a[n]' using some variable 'n' if you"
                   + " want dynamic size");
   }
 
-  virtual void forConstantArray (QualType t, const ConstantArrayType &a)
-  {
+  virtual void forConstantArray (QualType t, const ConstantArrayType &a) {
     (*this) (a.getElementType ());
   }
 
-  virtual void forVariableArray (QualType t, const VariableArrayType &a)
-  {
+  virtual void forVariableArray (QualType t, const VariableArrayType &a) {
     // FIXME: Restrict to rational-function expressions.  We probably need
     // polynomial for things like matrices, while division is required for
     // scaling down an input size.
     assert (a.getSizeExpr ());
-    if (a.getSizeModifier () == ArrayType::Star)
-      {
-        addViolation (NonPencilType,
-                      "invalid array type '"
-                      + t.getAsString () + "', size"
-                      + " must be arithmetical expression, possibly"
-                      + " referencing variables");
-      }
-    else if (a.getSizeExpr ()->hasNonTrivialCall (ctx))
-      {
-        addViolation (NonPencilType,
-                      "invalid array type '"
-                      + t.getAsString () + "' -  size must be"
-                      + " arithmetical expression, possibly referencing"
-                      + " variables");
-      }
+    if (a.getSizeModifier () == ArrayType::Star) {
+      addViolation (NonPencilType,
+                    "invalid array type '"
+                    + t.getAsString () + "', size"
+                    + " must be arithmetical expression, possibly"
+                    + " referencing variables");
+    } else if (a.getSizeExpr ()->hasNonTrivialCall (ctx)) {
+      addViolation (NonPencilType,
+                    "invalid array type '"
+                    + t.getAsString () + "' -  size must be"
+                    + " arithmetical expression, possibly referencing"
+                    + " variables");
+    }
     (*this) (a.getElementType ());
   }
 
@@ -291,8 +265,7 @@ struct TypeWFChecker : public TypeVisitor<void> {
   // It follows that an incomplete struct can be a valid PENCIL struct.  It is
   // only explicit struct definitions with pointer members that can cause
   // problems.
-  virtual void forStruct (QualType t, const RecordType &r)
-  {
+  virtual void forStruct (QualType t, const RecordType &r) {
     RecordDecl *decl = r.getDecl ();
     assert (decl);
 
@@ -302,25 +275,21 @@ struct TypeWFChecker : public TypeVisitor<void> {
       (*this) (i->getType ());
   }
 
-  virtual void forUnion (QualType t, const RecordType &r)
-  {
+  virtual void forUnion (QualType t, const RecordType &r) {
     addViolation (NonPencilType, "union type '" + t.getAsString () + "'");
   }
 
-  virtual void forEnum (QualType t, const EnumType &r)
-  {
+  virtual void forEnum (QualType t, const EnumType &r) {
     // Enum types are always OK.
   }
 
 public:
 
-  bool hasErrors () const
-  {
+  bool hasErrors () const {
     return !violations.empty ();
   }
 
-  const std::deque<std::string> &getTopPriorityViolations () const
-  {
+  const std::deque<std::string> &getTopPriorityViolations () const {
     assert (hasErrors ());
     return violations.rbegin ()->second;
   }
@@ -339,69 +308,60 @@ class FunctionParamChecker : private TypeVisitorWithDefault<void> {
   TypeWFChecker deep_checker;
   ParmVarDecl &decl;
 
-  static std::string formatDeepError (const std::string &msg)
-  {
+  static std::string formatDeepError (const std::string &msg) {
     return "argument type contains " + msg;
   }
 
-  virtual void forArray (QualType t, const ArrayType &a)
-  {
+  virtual void forArray (QualType t, const ArrayType &a) {
     // Shouldn't happen.
     abort ();
   }
 
-  virtual void forFunctionPointer (QualType t, const PointerType &p)
-  {
+  virtual void forFunctionPointer (QualType t, const PointerType &p) {
     deep_checker.addFormattedViolation (TypeWFChecker::NonPencilType,
                                         "function pointers not allowed");
   }
 
-  virtual void forPointer (QualType t, const PointerType &p)
-  {
+  virtual void forPointer (QualType t, const PointerType &p) {
     QualType origType = decl.getOriginalType ();
     bool missingConst = ! origType.isConstQualified ();
     bool missingRestrict = ! origType.isConstQualified ();
     bool missingStatic = false;
     bool isArray;
 
-    if ((isArray = origType->isArrayType ()))
-      {
-        const ArrayType *a = ctx.getAsArrayType (origType);
+    if ((isArray = origType->isArrayType ())) {
+      const ArrayType *a = ctx.getAsArrayType (origType);
 
-        // Missing qualifiers are coalesced into a single report and reported
-        // here, including missing static.  Size problems are reported
-        // separately as part of the requirement that the whole type be a valid
-        // PENCIL type, i.e. in the deep checker.
-        if (a->getSizeModifier () != ArrayType::Static)
-          missingStatic = true;
-      }
+      // Missing qualifiers are coalesced into a single report and reported
+      // here, including missing static.  Size problems are reported
+      // separately as part of the requirement that the whole type be a valid
+      // PENCIL type, i.e. in the deep checker.
+      if (a->getSizeModifier () != ArrayType::Static)
+        missingStatic = true;
+    }
 
-    if (missingStatic || missingConst || missingRestrict)
-      {
-        std::string msg = std::string (isArray ? "array" : "pass-by-pointer")
-          + " argument must be qualified"
-          + (isArray ? " static" : "")
-          + " const restrict";
-        deep_checker.addFormattedViolation (TypeWFChecker::IncompleteType, msg);
-      }
+    if (missingStatic || missingConst || missingRestrict) {
+      std::string msg = std::string (isArray ? "array" : "pass-by-pointer")
+        + " argument must be qualified"
+        + (isArray ? " static" : "")
+        + " const restrict";
+      deep_checker.addFormattedViolation (TypeWFChecker::IncompleteType, msg);
+    }
 
     deep_checker (isArray ? origType : p.getPointeeType ());
   }
 
-  virtual void forDefault (QualType t)
-  {
+  virtual void forDefault (QualType t) {
     deep_checker (t);
   }
 
 public:
 
-  bool hasErrors () const
-  {
+  bool hasErrors () const {
     return deep_checker.hasErrors ();
   }
 
-  void report (DiagnosticsFormatter &formatter) const
-  {
+  void report (DiagnosticsFormatter &formatter) const {
     if (!deep_checker.hasErrors ())
       return;
 
@@ -419,8 +379,7 @@ public:
   FunctionParamChecker (CompilerInstance &_CI, ParmVarDecl &_decl)
     : TypeVisitorWithDefault<void> (_CI.getASTContext ()),
       deep_checker (_CI.getASTContext (), formatDeepError),
-      decl (_decl)
-  {
+      decl (_decl) {
     (*this) (decl.getType ());
   }
 };
@@ -429,38 +388,32 @@ class FunctionRetTypeChecker : private TypeVisitorWithDefault<void> {
   TypeWFChecker deep_checker;
   const SourceLocation loc;
 
-  static std::string formatDeepError (const std::string &msg)
-  {
+  static std::string formatDeepError (const std::string &msg) {
     return "return type contains " + msg;
   }
 
-  virtual void forArray (QualType t, const ArrayType &a)
-  {
+  virtual void forArray (QualType t, const ArrayType &a) {
     // Clang already complains about array return types.
   }
 
   // There's no implicit array->pointer conversion in return types, so if we
   // get here then we really have a pointer.
-  virtual void forPointer (QualType t, const PointerType &p)
-  {
+  virtual void forPointer (QualType t, const PointerType &p) {
     deep_checker.addFormattedViolation (TypeWFChecker::NonPencilType,
                                         "return type must be scalar or struct");
   }
 
-  virtual void forDefault (QualType t)
-  {
+  virtual void forDefault (QualType t) {
     deep_checker (t);
   }
 
 public:
 
-  bool hasErrors () const
-  {
+  bool hasErrors () const {
     return deep_checker.hasErrors ();
   }
 
-  void report (DiagnosticsFormatter &formatter) const
-  {
+  void report (DiagnosticsFormatter &formatter) const {
     if (!deep_checker.hasErrors ())
       return;
 
@@ -478,8 +431,7 @@ public:
                           QualType rettype)
     : TypeVisitorWithDefault<void> (_CI.getASTContext ()),
       deep_checker (_CI.getASTContext (), formatDeepError),
-      loc (_loc)
-  {
+      loc (_loc) {
     (*this) (rettype);
   }
 };
@@ -496,21 +448,19 @@ public:
   virtual bool HandleTopLevelDecl(DeclGroupRef DG) {
     for (DeclGroupRef::iterator i = DG.begin (), e = DG.end (); i != e; ++i) {
       Decl *D = *i;
-      if (FunctionDecl *fun = dyn_cast<FunctionDecl>(D))
-        {
-          FunctionRetTypeChecker retcheck (CI, fun->getLocStart (),
-                                           fun->getResultType ());
-          if (retcheck.hasErrors ())
-            retcheck.report (diagnostics);
-          for (FunctionDecl::param_iterator param = fun->param_begin ();
-               param != fun->param_end ();
-               ++param)
-            {
-              FunctionParamChecker check (CI, **param);
-              if (check.hasErrors())
-                check.report (diagnostics);
-            }
+      if (FunctionDecl *fun = dyn_cast<FunctionDecl>(D)) {
+        FunctionRetTypeChecker retcheck (CI, fun->getLocStart (),
+                                         fun->getResultType ());
+        if (retcheck.hasErrors ())
+          retcheck.report (diagnostics);
+        for (FunctionDecl::param_iterator param = fun->param_begin ();
+             param != fun->param_end ();
+             ++param) {
+          FunctionParamChecker check (CI, **param);
+          if (check.hasErrors())
+            check.report (diagnostics);
         }
+      }
     }
 
     return true;
