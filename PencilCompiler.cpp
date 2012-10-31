@@ -425,6 +425,65 @@ public:
   }
 };
 
+class FunctionRetTypeChecker : private TypeVisitorWithDefault<void> {
+  TypeWFChecker deep_checker;
+  const SourceLocation loc;
+
+  static std::string formatDeepError (const std::string &msg)
+  {
+    return "return type contains " + msg;
+  }
+
+  virtual void forArray (QualType t, const ArrayType &a)
+  {
+    // Clang already complains about array return types.
+  }
+
+  // There's no implicit array->pointer conversion in return types, so if we
+  // get here then we really have a pointer.
+  virtual void forPointer (QualType t, const PointerType &p)
+  {
+    deep_checker.addFormattedViolation (TypeWFChecker::NonPencilType,
+                                        "return type must be scalar or struct");
+  }
+
+  virtual void forDefault (QualType t)
+  {
+    deep_checker (t);
+  }
+
+public:
+
+  bool hasErrors () const
+  {
+    return deep_checker.hasErrors ();
+  }
+
+  void report (DiagnosticsFormatter &formatter) const
+  {
+    if (!deep_checker.hasErrors ())
+      return;
+
+    const std::deque<std::string> &violations
+      = deep_checker.getTopPriorityViolations ();
+
+    for (std::deque<std::string>::const_iterator i = violations.begin ();
+         i != violations.end ();
+         ++i)
+      formatter (DiagnosticsEngine::Error,
+                 loc, "PENCIL violation: " + *i);
+  }
+
+  FunctionRetTypeChecker (CompilerInstance &_CI, SourceLocation _loc,
+                          QualType rettype)
+    : TypeVisitorWithDefault<void> (_CI.getASTContext ()),
+      deep_checker (_CI.getASTContext (), formatDeepError),
+      loc (_loc)
+  {
+    (*this) (rettype);
+  }
+};
+
 class PencilCheckConsumer : public ASTConsumer {
   CompilerInstance &CI;
   DiagnosticsFormatter diagnostics;
@@ -439,14 +498,10 @@ public:
       Decl *D = *i;
       if (FunctionDecl *fun = dyn_cast<FunctionDecl>(D))
         {
-          if (fun->getResultType ()->isPointerType ())
-            {
-              diagnostics (DiagnosticsEngine::Error,
-                           D->getLocStart (),
-                           "function " + fun->getNameAsString ()
-                           + " returns pointer type; PENCIL only allows"
-                           + " returning scalars and structs");
-            }
+          FunctionRetTypeChecker retcheck (CI, fun->getLocStart (),
+                                           fun->getResultType ());
+          if (retcheck.hasErrors ())
+            retcheck.report (diagnostics);
           for (FunctionDecl::param_iterator param = fun->param_begin ();
                param != fun->param_end ();
                ++param)
