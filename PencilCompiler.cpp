@@ -22,7 +22,7 @@
 #include "llvm/ADT/PriorityQueue.h"
 using namespace clang;
 
-namespace {
+namespace pencil {
 
 class DiagnosticsFormatter {
   CompilerInstance &CI;
@@ -488,5 +488,5 @@ protected:
 
 }
 
-static FrontendPluginRegistry::Add<PencilCompilerAction>
+static FrontendPluginRegistry::Add<pencil::PencilCompilerAction>
 X("pencilc", "PENCIL compilation frontend");
