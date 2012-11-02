@@ -29,6 +29,10 @@ class DiagnosticsFormatter {
 public:
   DiagnosticsFormatter (CompilerInstance &_CI) : CI (_CI) {}
 
+  CompilerInstance &getCompilerInstance () {
+    return CI;
+  }
+
   DiagnosticBuilder operator () (DiagnosticsEngine::Level level,
                                  const SourceLocation &loc,
                                  const char *message) {
@@ -68,7 +72,7 @@ protected:
   virtual Result forVariableArray (QualType, const VariableArrayType &) = 0;
 
 public:
-  Result operator () (const QualType &type) {
+  Result visit (const QualType &type) {
     ASTContext &ctx = TypeVisitor<Result>::ctx;
     if (const PointerType *t = type->getAs<PointerType> ()) {
       if (t->isFunctionPointerType ())
@@ -196,7 +200,7 @@ struct TypeWFChecker : public TypeVisitor<void> {
   }
 
   virtual void forConstantArray (QualType t, const ConstantArrayType &a) {
-    (*this) (a.getElementType ());
+    visit (a.getElementType ());
   }
 
   virtual void forVariableArray (QualType t, const VariableArrayType &a) {
@@ -217,7 +221,7 @@ struct TypeWFChecker : public TypeVisitor<void> {
                     + " arithmetical expression, possibly referencing"
                     + " variables");
     }
-    (*this) (a.getElementType ());
+    visit (a.getElementType ());
   }
 
   // structs may not contain pointer types -- this is easily checked for
@@ -272,7 +276,7 @@ struct TypeWFChecker : public TypeVisitor<void> {
     for (RecordDecl::field_iterator i = decl->field_begin ();
          i != decl->field_end ();
          ++i)
-      (*this) (i->getType ());
+      visit (i->getType ());
   }
 
   virtual void forUnion (QualType t, const RecordType &r) {
@@ -348,17 +352,11 @@ class FunctionParamChecker : private TypeVisitorWithDefault<void> {
       deep_checker.addFormattedViolation (TypeWFChecker::IncompleteType, msg);
     }
 
-    deep_checker (isArray ? origType : p.getPointeeType ());
+    deep_checker.visit (isArray ? origType : p.getPointeeType ());
   }
 
   virtual void forDefault (QualType t) {
-    deep_checker (t);
-  }
-
-public:
-
-  bool hasErrors () const {
-    return deep_checker.hasErrors ();
+    deep_checker.visit (t);
   }
 
   void report (DiagnosticsFormatter &formatter) const {
@@ -376,11 +374,19 @@ public:
                  "PENCIL violation: " + *i);
   }
 
-  FunctionParamChecker (CompilerInstance &_CI, ParmVarDecl &_decl)
-    : TypeVisitorWithDefault<void> (_CI.getASTContext ()),
-      deep_checker (_CI.getASTContext (), formatDeepError),
+public:
+
+  bool hasErrors () const {
+    return deep_checker.hasErrors ();
+  }
+
+  FunctionParamChecker (DiagnosticsFormatter &d, ParmVarDecl &_decl)
+    : TypeVisitorWithDefault<void> (d.getCompilerInstance ().getASTContext ()),
+      deep_checker (d.getCompilerInstance ().getASTContext (), formatDeepError),
       decl (_decl) {
-    (*this) (decl.getType ());
+    visit (decl.getType ());
+    if (hasErrors ())
+      report (d);
   }
 };
 
@@ -404,13 +410,7 @@ class FunctionRetTypeChecker : private TypeVisitorWithDefault<void> {
   }
 
   virtual void forDefault (QualType t) {
-    deep_checker (t);
-  }
-
-public:
-
-  bool hasErrors () const {
-    return deep_checker.hasErrors ();
+    deep_checker.visit (t);
   }
 
   void report (DiagnosticsFormatter &formatter) const {
@@ -427,12 +427,20 @@ public:
                  loc, "PENCIL violation: " + *i);
   }
 
-  FunctionRetTypeChecker (CompilerInstance &_CI, SourceLocation _loc,
+public:
+
+  bool hasErrors () const {
+    return deep_checker.hasErrors ();
+  }
+
+  FunctionRetTypeChecker (DiagnosticsFormatter &d, SourceLocation _loc,
                           QualType rettype)
-    : TypeVisitorWithDefault<void> (_CI.getASTContext ()),
-      deep_checker (_CI.getASTContext (), formatDeepError),
+    : TypeVisitorWithDefault<void> (d.getCompilerInstance ().getASTContext ()),
+      deep_checker (d.getCompilerInstance ().getASTContext (), formatDeepError),
       loc (_loc) {
-    (*this) (rettype);
+    visit (rettype);
+    if (hasErrors())
+      report (d);
   }
 };
 
@@ -449,17 +457,12 @@ public:
     for (DeclGroupRef::iterator i = DG.begin (), e = DG.end (); i != e; ++i) {
       Decl *D = *i;
       if (FunctionDecl *fun = dyn_cast<FunctionDecl>(D)) {
-        FunctionRetTypeChecker retcheck (CI, fun->getLocStart (),
+        FunctionRetTypeChecker retcheck (diagnostics, fun->getLocStart (),
                                          fun->getResultType ());
-        if (retcheck.hasErrors ())
-          retcheck.report (diagnostics);
         for (FunctionDecl::param_iterator param = fun->param_begin ();
              param != fun->param_end ();
-             ++param) {
-          FunctionParamChecker check (CI, **param);
-          if (check.hasErrors())
-            check.report (diagnostics);
-        }
+             ++param)
+          FunctionParamChecker check (diagnostics, **param);
       }
     }
 
