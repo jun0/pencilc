@@ -328,8 +328,10 @@ class FunctionParamChecker : private TypeVisitorWithDefault<void> {
 
   virtual void forPointer (QualType t, const PointerType &p) {
     QualType origType = decl.getOriginalType ();
-    bool missingConst = ! origType.isConstQualified ();
-    bool missingRestrict = ! origType.isConstQualified ();
+    // For some reason, getOriginalType() omits qualifiers from the outermost
+    // dimensions, so we need to grab those from t.
+    bool missingConst = ! t.isConstQualified ();
+    bool missingRestrict = ! t.isRestrictQualified ();
     bool missingStatic = false;
     bool isArray;
 
@@ -348,7 +350,15 @@ class FunctionParamChecker : private TypeVisitorWithDefault<void> {
       std::string msg = std::string (isArray ? "array" : "pass-by-pointer")
         + " argument must be qualified"
         + (isArray ? " static" : "")
-        + " const restrict";
+        + " const restrict (missing";
+      if ((!isArray || missingStatic) && missingConst && missingRestrict)
+        msg += isArray ? " all three" : " both";
+      else {
+        if (missingStatic) msg += " static";
+        if (missingConst) msg += " const";
+        if (missingRestrict) msg += " restrict";
+      }
+      msg += ")";
       deep_checker.addFormattedViolation (TypeWFChecker::IncompleteType, msg);
     }
 
