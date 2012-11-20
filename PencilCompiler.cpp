@@ -427,6 +427,10 @@ public:
           {
             FunctionRetTypeChecker retcheck (diagnostics, fun->getLocStart (),
                                              fun->getResultType ());
+            if (fun->isVariadic ())
+              diagnostics (DiagnosticsEngine::Error,
+                           D->getLocStart (),
+                           "PENCIL violation: functions may not be variadic");
             for (FunctionDecl::param_iterator param = fun->param_begin ();
                  param != fun->param_end ();
                  ++param) {
