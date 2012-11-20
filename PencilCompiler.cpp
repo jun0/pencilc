@@ -18,6 +18,7 @@
 #include "clang/Parse/ParseDiagnostic.h"
 #include "clang/Parse/Parser.h"
 #include "clang/Frontend/CompilerInstance.h"
+#include "clang/AST/TypeVisitor.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/ADT/PriorityQueue.h"
 using namespace clang;
@@ -49,110 +50,77 @@ public:
   }
 };
 
-// Not sure if the "visitor pattern" is supposed to include structural
-// recursion, but this class implements only the pattern-match part.  Recursion
-// is achieved by having the for*() methods building a new visitor object as
-// needed.
+// I can't seem to find a type visitor that includes (local) qualifiers, so
+// here's a visitor that keeps them around (code copied from TypeVisitor.h).  A
+// new instance must be created for every recursive call.
 //
-// Function pointers are treated separately from data pointers, although they
-// carry the exact same types of data.  A FunctionType should *not* be visited
-// directly with this visitor.  Instead break it down manually and visit its
-// argument types and return type individually.
-template<typename Result> class TypeVisitor {
-protected:
-  ASTContext &ctx;
-  virtual Result forFunctionPointer (QualType, const PointerType &) = 0;
-  virtual Result forPointer (QualType, const PointerType &) = 0;
-  virtual Result forScalar (QualType, const BuiltinType &) = 0;
-  virtual Result forStruct (QualType, const RecordType &) = 0;
-  virtual Result forUnion (QualType, const RecordType &) = 0;
-  virtual Result forEnum (QualType, const EnumType &) = 0;
-  virtual Result forIncompleteArray (QualType, const IncompleteArrayType &) = 0;
-  virtual Result forConstantArray (QualType, const ConstantArrayType &) = 0;
-  virtual Result forVariableArray (QualType, const VariableArrayType &) = 0;
+// The qualified types are passed in as QualType, not split into Qualifiers and
+// Type, since QualType is easier to print.
+// 
+// Implementation note: TypeVisitor has to be inherited publicly since the
+// dispatcher does a downcast.  VisitFooType() methods also have to be public
+// because they're called explicitly after the downcast as members of the
+// derived class.
 
+#define DISPATCH(CLASS) \
+  return static_cast<ImplClass*>(this)-> \
+           Visit##CLASS(q, static_cast<const CLASS*>(T))
+
+template<typename ImplClass, typename RetTy=void>
+class QualTypeVisitor {
 public:
-  Result visit (const QualType &type) {
-    ASTContext &ctx = TypeVisitor<Result>::ctx;
-    if (const PointerType *t = type->getAs<PointerType> ()) {
-      if (t->isFunctionPointerType ())
-        return forFunctionPointer (type, *t);
-      return forPointer (type, *t);
+  RetTy Visit(const QualType q) {
+    const Type *T = q.split ().Ty;
+    // Top switch stmt: dispatch to VisitFooType for each FooType.
+    switch (T->getTypeClass()) {
+#define ABSTRACT_TYPE(CLASS, PARENT)
+#define TYPE(CLASS, PARENT) case Type::CLASS: DISPATCH(CLASS##Type);
+#include "clang/AST/TypeNodes.def"
     }
-    else if (const VariableArrayType *a = ctx.getAsVariableArrayType (type))
-      return forVariableArray (type, *a);
-    else if (const IncompleteArrayType *a = ctx.getAsIncompleteArrayType (type))
-      return forIncompleteArray (type, *a);
-    else if (const ConstantArrayType *a = ctx.getAsConstantArrayType (type))
-      return forConstantArray (type, *a);
-    else if (const BuiltinType *t = type->getAs<BuiltinType> ())
-      return forScalar (type, *t);
-    else if (const RecordType *t = type->getAsStructureType ())
-      return forStruct (type, *t);
-    else if (const RecordType *t = type->getAsUnionType ())
-      return forUnion (type, *t);
-    else if (const EnumType *t = type->getAs<EnumType> ())
-      return forEnum (type, *t);
-
-    // Could get here if in C++ mode.
-    abort ();
+    llvm_unreachable("Unknown type class!");
   }
 
-  TypeVisitor (ASTContext &_ctx) : ctx (_ctx) {}
+  // If the implementation chooses not to implement a certain visit method, fall
+  // back on superclass.
+#define TYPE(CLASS, PARENT)                                     \
+  RetTy Visit##CLASS##Type(QualType q, const CLASS##Type *T) {  \
+  DISPATCH(PARENT);                                             \
+}
+#include "clang/AST/TypeNodes.def"
+
+  // Base case, ignore it. :)
+  RetTy VisitType(QualType q, const Type*) { return RetTy(); }
 };
+#undef DISPATCH
 
-// Adds a default case -- all non-overridden cases go to forDefault().
-// Additionally, all arrays go through forArray() before going to forDefault(),
-// so arrays can be caught uniformly there.
-//
-// I'm contemplating the addition of this defaulting mechanism to
-// TypeVisitor<>, but it can be error-prone (missing cases are silently
-// defaulted) so I'm not sure if I should.
-template <typename Result>
-class TypeVisitorWithDefault : public TypeVisitor<Result> {
-protected:
-  virtual Result forDefault (QualType) = 0;
 
-  virtual Result forFunctionPointer (QualType t, const PointerType &) {
-    return forDefault (t);
-  }
-  virtual Result forPointer (QualType t, const PointerType &) {
-    return forDefault (t);
-  }
-  virtual Result forScalar (QualType t, const BuiltinType &) {
-    return forDefault (t);
-  }
-  virtual Result forStruct (QualType t, const RecordType &) {
-    return forDefault (t);
-  }
-  virtual Result forUnion (QualType t, const RecordType &) {
-    return forDefault (t);
-  }
-  virtual Result forEnum (QualType t, const EnumType &) {
-    return forDefault (t);
-  }
-  virtual Result forArray (QualType t, const ArrayType &) {
-    return forDefault (t);
-  }
-  virtual Result forIncompleteArray (QualType t, const IncompleteArrayType &a) {
-    return forArray (t, a);
-  }
-  virtual Result forConstantArray (QualType t, const ConstantArrayType &a) {
-    return forArray (t, a);
-  }
-  virtual Result forVariableArray (QualType t, const VariableArrayType &a) {
-    return forArray (t, a);
-  }
-
-  TypeVisitorWithDefault (ASTContext &ctx) : TypeVisitor<Result> (ctx) {}
-};
-
-// Checks whether a given type is a valid PENCIL type.  Call report () to get a
-// series of callbacks with the error messages.
+// A (qual)type visitor that checks if the given type conforms to PENCIL.
+// Types rejected are pointer-carrying arrays and structs, function pointers,
+// and other types that are invalid regardless of the context they appear in.
+// Context-sensitive constraints, like static const restrict qualification on
+// function parameters, must be checked separately.
+// 
+// Visit() returns true iff the type is admissible (i.e. no violations were
+// detected).
 // FIXME: freeze a specific format for the error messages so that it can be
 // manipulated reliably.
-struct TypeWFChecker : public TypeVisitor<void> {
+class PencilTypeWFChecker : public QualTypeVisitor<PencilTypeWFChecker, bool> {
+  ASTContext &ctx;
 
+  void unknownType (QualType q) {
+    llvm_unreachable ("Found unrecognizable type: " + q.getAsString ()
+                      + " -- probably a bug in the compiler");
+  }
+
+#if 1
+#define DUMP(x) llvm::errs() << #x " = " << x           \
+                             << "  (" << __func__      \
+                             << " @ " << __LINE__ << ")\n"
+#else
+#define DUMP(x) // empty
+#endif
+
+public:
   // Error messages will be queued up in `violations', indexed by priority.
   // It's usually useful to only report the highest-priority violations, so
   // e.g., if we find a function pointer we don't waste our time complaining
@@ -179,155 +147,151 @@ struct TypeWFChecker : public TypeVisitor<void> {
     addFormattedViolation (p, formatErrorMessage (msg));
   }
 
-  virtual void forFunctionPointer (QualType t, const PointerType &pt) {
+  bool VisitElaboratedType (QualType q, const ElaboratedType *t) {
+    return Visit (t->getNamedType ());
+  }
+
+  bool VisitTypedefType (QualType q, const TypedefType *t) {
+    return Visit (t->desugar ());
+  }
+
+  bool VisitPointerType (QualType q, const PointerType *t) {
     addViolation (NonPencilType,
-                  "function pointer type '" + t.getAsString () + "'");
+                  std::string(t->isFunctionPointerType () ? "function " : "")
+                  + "pointer type '" + q.getAsString () + "'");
+    return false;
   }
 
-  virtual void forPointer (QualType t, const PointerType &pt) {
-    addViolation(NonPencilType, "pointer type '" + t.getAsString () + "'");
+  bool VisitFunctionType (QualType q, const FunctionType *t) {
+    llvm_unreachable ("BUG: got to function type" + q.getAsString ());
+    return false;
   }
 
-  virtual void forScalar (QualType t, const BuiltinType &) {
-    // Scalars are always OK.
-  }
+  // Scalars are OK.
+  bool VisitBuiltinType (QualType q, const BuiltinType *) { return true; }
+  bool VisitComplexType (QualType q, const ComplexType *) { return true; }
+  bool VisitAtomicType (QualType q, const AtomicType *) { return true; }
+  bool VisitEnumType (QualType q, const EnumType *) { return true; }
 
-  virtual void forIncompleteArray (QualType t, const IncompleteArrayType &a) {
+  virtual bool VisitIncompleteArrayType (QualType t,
+                                         const IncompleteArrayType *a) {
     addViolation (IncompleteType,
                   "unsized array type '" + t.getAsString ()
                   + "' - write 'T a[n]' using some variable 'n' if you"
                   + " want dynamic size");
+    return false;
   }
 
-  virtual void forConstantArray (QualType t, const ConstantArrayType &a) {
-    visit (a.getElementType ());
+  virtual bool VisitConstantArrayType (QualType t, const ConstantArrayType *a) {
+    return Visit (a->getElementType ());
   }
 
-  virtual void forVariableArray (QualType t, const VariableArrayType &a) {
+  virtual bool VisitVariableArrayType (QualType t, const VariableArrayType *a) {
     // FIXME: Restrict to rational-function expressions.  We probably need
     // polynomial for things like matrices, while division is required for
     // scaling down an input size.
-    assert (a.getSizeExpr ());
-    if (a.getSizeModifier () == ArrayType::Star) {
+    bool ok = true;
+    assert (a->getSizeExpr ());
+    if (a->getSizeModifier () == ArrayType::Star) {
       addViolation (NonPencilType,
                     "invalid array type '"
                     + t.getAsString () + "', size"
-                    + " must be arithmetical expression, possibly"
+                    + " must be an arithmetical expression, possibly"
                     + " referencing variables");
-    } else if (a.getSizeExpr ()->hasNonTrivialCall (ctx)) {
+      ok = false;
+    } else if (a->getSizeExpr ()->hasNonTrivialCall (ctx)) {
       addViolation (NonPencilType,
                     "invalid array type '"
                     + t.getAsString () + "' -  size must be"
-                    + " arithmetical expression, possibly referencing"
+                    + " an arithmetical expression, possibly referencing"
                     + " variables");
+      ok = false;
     }
-    visit (a.getElementType ());
+    return Visit (a->getElementType ()) && ok;
   }
 
-  // structs may not contain pointer types -- this is easily checked for
-  // structs whose definitions are visible at their points of use.  A tricky
-  // issue is incomplete structs, which, as with the x (of type struct s) in
-  // 
-  //   struct s;
-  //   /* (1) */
-  //   void f (struct s * const restrict x)
-  //   {
-  //      /* (2) */
-  //   }
-  //   struct s {
-  //     int *p;
-  //   };
-  //
-  // may *become* a pointer-containing type after its use has occurred.  Worse
-  // yet, the definition of the struct s may never be visible to pencilc.
-  //
-  // We believe incomplete structs are nonetheless OK, under the assumption
-  // that:
-  //
-  //   - non-PENCIL functions called from within PENCIL do not create aliasing.
-  //   
-  //   - struct definitions within PENCIL functions are required to have no
-  //     pointer members.
-  // 
-  // The only ways that the (2) part in the code above can introduce aliasing
-  // are:
-  //
-  //    - by assigning to x
-  //
-  //    - by calling a non-PENCIL function that assigns pointer members of x
-  //
-  // For the first to be possible, the definition of the struct must be visible
-  // at the assignment site, so the definition must either occur at (1) or (2).
-  // A struct occuring at (1) would make the pointer member visible to the
-  // function parameter type checker, so this will be caught promptly.  This is
-  // also the case if (1) had a prototype for f() and a definition of struct s,
-  // in that order.  A pointer-containing struct definition occuring at (2)
-  // will also be checked and caught promptly.
-  //
-  // The second kind of aliasing is ruled out by fiat.
-  // 
-  // It follows that an incomplete struct can be a valid PENCIL struct.  It is
-  // only explicit struct definitions with pointer members that can cause
-  // problems.
-  virtual void forStruct (QualType t, const RecordType &r) {
-    RecordDecl *decl = r.getDecl ();
+  bool VisitStructureType (QualType q, const RecordType *t) {
+    bool ok = true;
+    RecordDecl *decl = t->getDecl ();
     assert (decl);
 
     for (RecordDecl::field_iterator i = decl->field_begin ();
          i != decl->field_end ();
          ++i)
-      visit (i->getType ());
+      ok = Visit (i->getType ()) && ok;
+    return ok;
   }
 
-  virtual void forUnion (QualType t, const RecordType &r) {
-    addViolation (NonPencilType, "union type '" + t.getAsString () + "'");
+  bool VisitUnionType (QualType q, const RecordType *t) {
+    addViolation (NonPencilType, "union type '" + q.getAsString () + "'");
+    return false;
   }
 
-  virtual void forEnum (QualType t, const EnumType &r) {
-    // Enum types are always OK.
+  bool VisitRecordType (QualType q, const RecordType *t) {
+    if (t->isStructureType ())
+      return VisitStructureType (q, t);
+    if (t->isUnionType ())
+      return VisitUnionType (q, t);
+    llvm_unreachable ("Found unrecognizable type: " + q.getAsString ()
+                      + " -- probably a bug in the compiler");
   }
 
-public:
-
-  bool hasErrors () const {
-    return !violations.empty ();
+  bool VisitTagType (QualType q, const TagType *t) {
+    abort ();
   }
 
-  const std::deque<std::string> &getTopPriorityViolations () const {
-    assert (hasErrors ());
-    return violations.rbegin ()->second;
+  // Catch-all
+  bool VisitType (QualType q, const Type *T) {
+    llvm_unreachable ("Found unrecognizable type: " + q.getAsString ()
+                      + " -- probably a bug in the compiler");
   }
 
-  TypeWFChecker (ASTContext &ctx,
-                 std::string (*_formatErrorMessage) (const std::string &))
-  : TypeVisitor<void> (ctx), formatErrorMessage (_formatErrorMessage)
-  {}
+  const std::deque<std::string> *getTopPriorityViolations () const {
+    if (violations.empty ())
+      return NULL;
+    return &violations.rbegin ()->second;
+  }
+
+  PencilTypeWFChecker (ASTContext &ctx_,
+                       std::string (*_formatErrorMessage) (const std::string &))
+    : ctx (ctx_), formatErrorMessage (_formatErrorMessage) {
+  }
 };
+
 
 // Checks PENCIL violations in a single function parameter declaration.  The
 // outermost array/pointer dimension is handled specially, so the TypeWFChecker
 // should only be used to check "deep" constituent types.  This class is mostly
 // a wrapper that implements this special-casing.
-class FunctionParamChecker : private TypeVisitorWithDefault<void> {
-  TypeWFChecker deep_checker;
+class FunctionParamChecker
+  : public QualTypeVisitor<FunctionParamChecker, bool> {
+  PencilTypeWFChecker deep_checker;
   ParmVarDecl &decl;
+  ASTContext &ctx;
 
+public:
   static std::string formatDeepError (const std::string &msg) {
     return "argument type contains " + msg;
   }
 
-  virtual void forArray (QualType t, const ArrayType &a) {
-    // Shouldn't happen.
-    abort ();
+  virtual bool VisitArrayType (QualType t, const ArrayType *a) {
+    llvm_unreachable ("BUG: unknown array type " + t.getAsString ());
   }
 
-  virtual void forFunctionPointer (QualType t, const PointerType &p) {
-    deep_checker.addFormattedViolation (TypeWFChecker::NonPencilType,
+  virtual bool VisitFunctionPointer (QualType t, const PointerType *p) {
+    deep_checker.addFormattedViolation (PencilTypeWFChecker::NonPencilType,
                                         "function pointers not allowed");
+    return false;
   }
 
-  virtual void forPointer (QualType t, const PointerType &p) {
+  virtual bool VisitPointerType (QualType t, const PointerType *p) {
+    if (p->isFunctionPointerType ())
+      return VisitFunctionPointer (t, p);
+
+    // A pointer type may be a genuine pointer or array coerced to pointer.
+    // The original designation can be recovered from the declaration.
     QualType origType = decl.getOriginalType ();
+
     // For some reason, getOriginalType() omits qualifiers from the outermost
     // dimensions, so we need to grab those from t.
     bool missingConst = ! t.isConstQualified ();
@@ -359,79 +323,59 @@ class FunctionParamChecker : private TypeVisitorWithDefault<void> {
         if (missingRestrict) msg += " restrict";
       }
       msg += ")";
-      deep_checker.addFormattedViolation (TypeWFChecker::IncompleteType, msg);
+      deep_checker.addFormattedViolation (PencilTypeWFChecker::IncompleteType,
+                                          msg);
     }
 
-    deep_checker.visit (isArray ? origType : p.getPointeeType ());
+    return deep_checker.Visit (isArray ? origType : p->getPointeeType ());
   }
 
-  virtual void forDefault (QualType t) {
-    deep_checker.visit (t);
+  virtual bool VisitType (QualType t, const Type *) {
+    return deep_checker.Visit (t);
   }
 
   void report (DiagnosticsFormatter &formatter) const {
-    if (!deep_checker.hasErrors ())
+    const std::deque<std::string> *violations
+      = deep_checker.getTopPriorityViolations ();
+    if (! violations)
       return;
 
-    const std::deque<std::string> &violations
-      = deep_checker.getTopPriorityViolations ();
-
-    for (std::deque<std::string>::const_iterator i = violations.begin ();
-         i != violations.end ();
+    for (std::deque<std::string>::const_iterator i = violations->begin ();
+         i != violations->end ();
          ++i)
       formatter (DiagnosticsEngine::Error,
                  decl.getLocStart (),
                  "PENCIL violation: " + *i);
   }
 
-public:
-
   bool hasErrors () const {
-    return deep_checker.hasErrors ();
+    return deep_checker.getTopPriorityViolations () != NULL;
   }
 
-  FunctionParamChecker (DiagnosticsFormatter &d, ParmVarDecl &_decl)
-    : TypeVisitorWithDefault<void> (d.getCompilerInstance ().getASTContext ()),
-      deep_checker (d.getCompilerInstance ().getASTContext (), formatDeepError),
-      decl (_decl) {
-    visit (decl.getType ());
-    if (hasErrors ())
-      report (d);
+  FunctionParamChecker (CompilerInstance &CI, ParmVarDecl &_decl)
+    : deep_checker (CI.getASTContext (), formatDeepError),
+      decl (_decl), ctx (CI.getASTContext ()) {
+    Visit (decl.getType ());
   }
 };
 
-class FunctionRetTypeChecker : private TypeVisitorWithDefault<void> {
-  TypeWFChecker deep_checker;
+class FunctionRetTypeChecker
+  : public QualTypeVisitor<FunctionRetTypeChecker, bool> {
+  PencilTypeWFChecker deep_checker;
   const SourceLocation loc;
 
   static std::string formatDeepError (const std::string &msg) {
     return "return type contains " + msg;
   }
 
-  virtual void forArray (QualType t, const ArrayType &a) {
-    // Clang already complains about array return types.
-  }
-
-  // There's no implicit array->pointer conversion in return types, so if we
-  // get here then we really have a pointer.
-  virtual void forPointer (QualType t, const PointerType &p) {
-    deep_checker.addFormattedViolation (TypeWFChecker::NonPencilType,
-                                        "return type must be scalar or struct");
-  }
-
-  virtual void forDefault (QualType t) {
-    deep_checker.visit (t);
-  }
-
   void report (DiagnosticsFormatter &formatter) const {
-    if (!deep_checker.hasErrors ())
+    const std::deque<std::string> *violations
+      = deep_checker.getTopPriorityViolations ();
+    if (!violations)
       return;
 
-    const std::deque<std::string> &violations
-      = deep_checker.getTopPriorityViolations ();
-
-    for (std::deque<std::string>::const_iterator i = violations.begin ();
-         i != violations.end ();
+    for (std::deque<std::string>::const_iterator i = violations->begin ();
+         i != violations->end ();
          ++i)
       formatter (DiagnosticsEngine::Error,
                  loc, "PENCIL violation: " + *i);
@@ -439,17 +383,28 @@ class FunctionRetTypeChecker : private TypeVisitorWithDefault<void> {
 
 public:
 
-  bool hasErrors () const {
-    return deep_checker.hasErrors ();
+  virtual bool VisitArrayType (QualType q, const ArrayType *a) {
+    // Clang already complains about array return types.
+    return true;
+  }
+
+  // There's no implicit array->pointer conversion in return types, so if we
+  // get here then we really have a pointer.
+  virtual bool VisitPointerType (QualType q, const PointerType *p) {
+    deep_checker.addFormattedViolation (PencilTypeWFChecker::NonPencilType,
+                                        "return type must be scalar or struct");
+    return false;
+  }
+
+  virtual bool VisitType (QualType q, const Type *) {
+    return deep_checker.Visit (q);
   }
 
   FunctionRetTypeChecker (DiagnosticsFormatter &d, SourceLocation _loc,
                           QualType rettype)
-    : TypeVisitorWithDefault<void> (d.getCompilerInstance ().getASTContext ()),
-      deep_checker (d.getCompilerInstance ().getASTContext (), formatDeepError),
+    : deep_checker (d.getCompilerInstance ().getASTContext (), formatDeepError),
       loc (_loc) {
-    visit (rettype);
-    if (hasErrors())
+    if (! Visit (rettype))
       report (d);
   }
 };
@@ -467,12 +422,23 @@ public:
     for (DeclGroupRef::iterator i = DG.begin (), e = DG.end (); i != e; ++i) {
       Decl *D = *i;
       if (FunctionDecl *fun = dyn_cast<FunctionDecl>(D)) {
-        FunctionRetTypeChecker retcheck (diagnostics, fun->getLocStart (),
-                                         fun->getResultType ());
-        for (FunctionDecl::param_iterator param = fun->param_begin ();
-             param != fun->param_end ();
-             ++param)
-          FunctionParamChecker check (diagnostics, **param);
+        // Perform PENCIL-specific type checks only for the first declaration.
+        if (fun->isFirstDeclaration ())
+          {
+            FunctionRetTypeChecker retcheck (diagnostics, fun->getLocStart (),
+                                             fun->getResultType ());
+            for (FunctionDecl::param_iterator param = fun->param_begin ();
+                 param != fun->param_end ();
+                 ++param) {
+              FunctionParamChecker check (CI, **param);
+              if (check.hasErrors ())
+                check.report (diagnostics);
+            }
+          }
+
+        diagnostics (DiagnosticsEngine::Note,
+                     D->getLocStart (),
+                     "");
       }
     }
 
