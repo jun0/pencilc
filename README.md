@@ -30,13 +30,13 @@ How to run
 ----------
 
 Once the plugin is built, you can run it on a PENCIL-conformant C file using:
---
+
 Linux:
 $ clang -cc1 -load $install_dir/lib/PencilCompiler.so -plugin pencilc some-input-file.c
 
 Mac:
 $ clang -cc1 -load $install_dir/lib/PencilCompiler.dylib -plugin pencilc some-input-file.c
---
+
 where $install_dir is your install path for clang.  You can replace it by the
 build directory if you prefer not to install clang.
 
