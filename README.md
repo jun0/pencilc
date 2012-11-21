@@ -1,7 +1,8 @@
 pencilc
 =======
 
-This is a prototype compiler for the PENCIL language.
+This is a prototype compiler for the PENCIL language.  Right now it only checks
+that the input file conforms to the PENCIL coding rules.
 
 How to build
 ------------
