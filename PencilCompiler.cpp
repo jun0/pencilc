@@ -252,6 +252,21 @@ public:
     return &violations.rbegin ()->second;
   }
 
+  bool hasErrors () const {
+    return ! violations.empty ();
+  }
+
+  void report (DiagnosticsFormatter &formatter, SourceLocation loc) const {
+    const std::deque<std::string> *violations = getTopPriorityViolations ();
+    if (!violations)
+      return;
+
+    for (std::deque<std::string>::const_iterator i = violations->begin ();
+         i != violations->end ();
+         ++i)
+      formatter (DiagnosticsEngine::Error, loc, "PENCIL violation: " + *i);
+  }
+
   PencilTypeWFChecker (ASTContext &ctx_,
                        std::string (*_formatErrorMessage) (const std::string &))
     : ctx (ctx_), formatErrorMessage (_formatErrorMessage) {
@@ -334,22 +349,12 @@ public:
     return deep_checker.Visit (t);
   }
 
-  void report (DiagnosticsFormatter &formatter) const {
-    const std::deque<std::string> *violations
-      = deep_checker.getTopPriorityViolations ();
-    if (! violations)
-      return;
-
-    for (std::deque<std::string>::const_iterator i = violations->begin ();
-         i != violations->end ();
-         ++i)
-      formatter (DiagnosticsEngine::Error,
-                 decl.getLocStart (),
-                 "PENCIL violation: " + *i);
+  bool hasErrors () const {
+    return deep_checker.hasErrors ();
   }
 
-  bool hasErrors () const {
-    return deep_checker.getTopPriorityViolations () != NULL;
+  void report (DiagnosticsFormatter &diagnostics) const {
+    deep_checker.report (diagnostics, decl.getLocStart ());
   }
 
   FunctionParamChecker (CompilerInstance &CI, ParmVarDecl &_decl)
@@ -409,6 +414,124 @@ public:
   }
 };
 
+class LocalVarTypeChecker {
+  static std::string formatMessage (const std::string &msg) {
+    return "PENCIL violation: declared type contains " + msg;
+  }
+public:
+  
+  LocalVarTypeChecker (DiagnosticsFormatter &d, VarDecl *var) {
+    d (DiagnosticsEngine::Note, var->getLocStart (), "declaration here");
+    PencilTypeWFChecker checker (d.getCompilerInstance ().getASTContext (),
+                                 formatMessage);
+    checker.Visit (var->getType ());
+    if (checker.hasErrors ())
+      checker.report (d, var->getLocStart ());
+  }
+};
+
+class FunctionBodyTypeChecker : public StmtVisitor<FunctionBodyTypeChecker> {
+  DiagnosticsFormatter &diagnostics;
+  void VisitDeclStmt (DeclStmt *stmt) {
+    DeclGroupRef DG = stmt->getDeclGroup ();
+    for (DeclGroupRef::iterator i = DG.begin (); i != DG.end (); ++i) {
+      if (VarDecl *var = cast<VarDecl> (*i)) {
+        SourceLocation loc = var->getLocStart ();
+        diagnostics (DiagnosticsEngine::Note, loc, "declaration here");
+        DUMP (var->getNameAsString ());
+        LocalVarTypeChecker (diagnostics, var);
+      } else {
+        VisitStmt (stmt);
+      }
+    }
+  }
+
+  void VisitCompoundStmt (const CompoundStmt *s) {
+    for (CompoundStmt::const_body_iterator i = s->body_begin();
+         i != s->body_end(); ++i)
+      Visit(*i);
+  }
+
+  void VisitStmt (Stmt *S) {
+#define DISPATCH(a, b) do { llvm::errs () << #a << " " << #b << "\n"; return; } while (0)
+#define PTR(p) p *
+    // If we have a binary expr, dispatch to the subcode of the binop.  A smart
+    // optimizer (e.g. LLVM) will fold this comparison into the switch stmt
+    // below.
+    if (PTR(BinaryOperator) BinOp = dyn_cast<BinaryOperator>(S)) {
+      switch (BinOp->getOpcode()) {
+      case BO_PtrMemD:   DISPATCH(BinPtrMemD,   BinaryOperator);
+      case BO_PtrMemI:   DISPATCH(BinPtrMemI,   BinaryOperator);
+      case BO_Mul:       DISPATCH(BinMul,       BinaryOperator);
+      case BO_Div:       DISPATCH(BinDiv,       BinaryOperator);
+      case BO_Rem:       DISPATCH(BinRem,       BinaryOperator);
+      case BO_Add:       DISPATCH(BinAdd,       BinaryOperator);
+      case BO_Sub:       DISPATCH(BinSub,       BinaryOperator);
+      case BO_Shl:       DISPATCH(BinShl,       BinaryOperator);
+      case BO_Shr:       DISPATCH(BinShr,       BinaryOperator);
+
+      case BO_LT:        DISPATCH(BinLT,        BinaryOperator);
+      case BO_GT:        DISPATCH(BinGT,        BinaryOperator);
+      case BO_LE:        DISPATCH(BinLE,        BinaryOperator);
+      case BO_GE:        DISPATCH(BinGE,        BinaryOperator);
+      case BO_EQ:        DISPATCH(BinEQ,        BinaryOperator);
+      case BO_NE:        DISPATCH(BinNE,        BinaryOperator);
+
+      case BO_And:       DISPATCH(BinAnd,       BinaryOperator);
+      case BO_Xor:       DISPATCH(BinXor,       BinaryOperator);
+      case BO_Or :       DISPATCH(BinOr,        BinaryOperator);
+      case BO_LAnd:      DISPATCH(BinLAnd,      BinaryOperator);
+      case BO_LOr :      DISPATCH(BinLOr,       BinaryOperator);
+      case BO_Assign:    DISPATCH(BinAssign,    BinaryOperator);
+      case BO_MulAssign: DISPATCH(BinMulAssign, CompoundAssignOperator);
+      case BO_DivAssign: DISPATCH(BinDivAssign, CompoundAssignOperator);
+      case BO_RemAssign: DISPATCH(BinRemAssign, CompoundAssignOperator);
+      case BO_AddAssign: DISPATCH(BinAddAssign, CompoundAssignOperator);
+      case BO_SubAssign: DISPATCH(BinSubAssign, CompoundAssignOperator);
+      case BO_ShlAssign: DISPATCH(BinShlAssign, CompoundAssignOperator);
+      case BO_ShrAssign: DISPATCH(BinShrAssign, CompoundAssignOperator);
+      case BO_AndAssign: DISPATCH(BinAndAssign, CompoundAssignOperator);
+      case BO_OrAssign:  DISPATCH(BinOrAssign,  CompoundAssignOperator);
+      case BO_XorAssign: DISPATCH(BinXorAssign, CompoundAssignOperator);
+      case BO_Comma:     DISPATCH(BinComma,     BinaryOperator);
+      }
+    } else if (PTR(UnaryOperator) UnOp = dyn_cast<UnaryOperator>(S)) {
+      switch (UnOp->getOpcode()) {
+      case UO_PostInc:   DISPATCH(UnaryPostInc,   UnaryOperator);
+      case UO_PostDec:   DISPATCH(UnaryPostDec,   UnaryOperator);
+      case UO_PreInc:    DISPATCH(UnaryPreInc,    UnaryOperator);
+      case UO_PreDec:    DISPATCH(UnaryPreDec,    UnaryOperator);
+      case UO_AddrOf:    DISPATCH(UnaryAddrOf,    UnaryOperator);
+      case UO_Deref:     DISPATCH(UnaryDeref,     UnaryOperator);
+      case UO_Plus:      DISPATCH(UnaryPlus,      UnaryOperator);
+      case UO_Minus:     DISPATCH(UnaryMinus,     UnaryOperator);
+      case UO_Not:       DISPATCH(UnaryNot,       UnaryOperator);
+      case UO_LNot:      DISPATCH(UnaryLNot,      UnaryOperator);
+      case UO_Real:      DISPATCH(UnaryReal,      UnaryOperator);
+      case UO_Imag:      DISPATCH(UnaryImag,      UnaryOperator);
+      case UO_Extension: DISPATCH(UnaryExtension, UnaryOperator);
+      }
+    }
+
+    // Top switch stmt: dispatch to VisitFooStmt for each FooStmt.
+    switch (S->getStmtClass()) {
+    default: llvm_unreachable("Unknown stmt kind!");
+#define ABSTRACT_STMT(STMT)
+#define STMT(CLASS, PARENT)                                     \
+      case Stmt::CLASS ## Class: DISPATCH(CLASS, CLASS);
+#include "clang/AST/StmtNodes.inc"
+    }
+  }
+
+  friend class StmtVisitorBase;
+public:
+  FunctionBodyTypeChecker (DiagnosticsFormatter &diagnostics_, Stmt *body)
+  : diagnostics (diagnostics_) {
+    Visit (body);
+  }
+};
+
+
 class PencilCheckConsumer : public ASTConsumer {
   CompilerInstance &CI;
   DiagnosticsFormatter diagnostics;
@@ -443,6 +566,12 @@ public:
         diagnostics (DiagnosticsEngine::Note,
                      D->getLocStart (),
                      "");
+
+        // FIXME: suppress duplicate errors when a function is defined and then
+        // declared again.
+        if (fun->hasBody ()) {
+          FunctionBodyTypeChecker check (diagnostics, D->getBody ());
+        }
       }
     }
 
